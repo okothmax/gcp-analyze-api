@@ -1,0 +1,89 @@
+name: CI/CD
+
+on:
+  push:
+    branches: ["main"]
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: ${{ secrets.GCP_REGION }}
+  REPO: ${{ secrets.ARTIFACT_REPO }}
+  SERVICE: ${{ secrets.CLOUD_RUN_SERVICE }}
+  IMAGE_NAME: analyze-api
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Lint Python
+        working-directory: analyzer-app
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+          ruff check app
+
+      - name: Lint Terraform
+        working-directory: terraform
+        run: |
+          terraform fmt -check
+
+      - name: Auth to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker auth for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        working-directory: analyzer-app
+        env:
+          IMAGE_PATH: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+        run: |
+          docker build -t "$IMAGE_PATH" .
+          docker push "$IMAGE_PATH"
+          echo "IMAGE_PATH=$IMAGE_PATH" >> $GITHUB_ENV
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Apply (deploy)
+        working-directory: terraform
+        env:
+          TF_VAR_project_id: ${{ env.PROJECT_ID }}
+          TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_repo_name: ${{ env.REPO }}
+          TF_VAR_service_name: ${{ env.SERVICE }}
+          TF_VAR_image: ${{ env.IMAGE_PATH }}
+        run: |
+          terraform apply -auto-approve \
+            -var project_id=${TF_VAR_project_id} \
+            -var region=${TF_VAR_region} \
+            -var repo_name=${TF_VAR_repo_name} \
+            -var service_name=${TF_VAR_service_name} \
+            -var image=${TF_VAR_image}

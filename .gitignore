@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+.env
+
+# Editor
+.vscode/
+.idea/
+
+# macOS/Linux
+.DS_Store
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+.terraform.tfstate.lock.info
+terraform.tfvars
+
+# Docker
+**/.dockerignore
+
+# Node (if any future tooling)
+node_modules/
