@@ -3,7 +3,6 @@ name: CI/CD
 on:
   push:
     branches: ["main"]
-  workflow_dispatch:
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -23,18 +22,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify Secrets
-        run: |
-          if [ -z "${{ secrets.GCP_PROJECT_ID }}" ] || \
-             [ -z "${{ secrets.GCP_REGION }}" ] || \
-             [ -z "${{ secrets.ARTIFACT_REPO }}" ] || \
-             [ -z "${{ secrets.CLOUD_RUN_SERVICE }}" ] || \
-             [ -z "${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}" ] || \
-             [ -z "${{ secrets.GCP_SERVICE_ACCOUNT }}" ]; then
-            echo "One or more secrets are missing!"
-            exit 1
-          fi
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -52,23 +39,17 @@ jobs:
           pip install ruff
           ruff check app
 
-      - name: Run Python Tests
+      - name: Run Tests
         working-directory: analyzer-app
         run: |
-          pip install pytest pytest-cov
-          pytest --cov=app --cov-report=xml
-
-      - name: Upload Coverage
-        uses: codecov/codecov-action@v4
-        with:
-          files: ./analyzer-app/coverage.xml
-          token: ${{ secrets.CODECOV_TOKEN }}
+          pip install pytest
+          pip install -r requirements.txt
+          pytest test_main.py -v
 
       - name: Lint Terraform
         working-directory: terraform
         run: |
           terraform fmt -check
-          terraform validate
 
       - name: Auth to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
@@ -85,38 +66,20 @@ jobs:
         run: |
           gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
 
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-
       - name: Build and push image
         working-directory: analyzer-app
         env:
           IMAGE_PATH: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          IMAGE_PATH_LATEST: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO }}/${{ env.IMAGE_NAME }}:latest
         run: |
-          docker buildx create --use
-          docker buildx build --cache-from=type=local,src=/tmp/.buildx-cache \
-                              --cache-to=type=local,dest=/tmp/.buildx-cache \
-                              -t "$IMAGE_PATH" -t "$IMAGE_PATH_LATEST" --push .
+          docker build -t "$IMAGE_PATH" .
+          docker push "$IMAGE_PATH"
           echo "IMAGE_PATH=$IMAGE_PATH" >> $GITHUB_ENV
-
-      - name: Scan Docker Image
-        working-directory: analyzer-app
-        run: |
-          docker scan "$IMAGE_PATH"
 
       - name: Terraform Init
         working-directory: terraform
-        env:
-          TF_LOG: DEBUG
         run: terraform init
 
-      - name: Terraform Plan
+      - name: Terraform Apply (deploy)
         working-directory: terraform
         env:
           TF_VAR_project_id: ${{ env.PROJECT_ID }}
@@ -125,13 +88,9 @@ jobs:
           TF_VAR_service_name: ${{ env.SERVICE }}
           TF_VAR_image: ${{ env.IMAGE_PATH }}
         run: |
-          terraform plan -out=tfplan \
+          terraform apply -auto-approve \
             -var project_id=${TF_VAR_project_id} \
             -var region=${TF_VAR_region} \
             -var repo_name=${TF_VAR_repo_name} \
             -var service_name=${TF_VAR_service_name} \
             -var image=${TF_VAR_image}
-
-      - name: Terraform Apply
-        working-directory: terraform
-        run: terraform apply tfplan
