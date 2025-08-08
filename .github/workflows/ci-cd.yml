@@ -135,11 +135,3 @@ jobs:
       - name: Terraform Apply
         working-directory: terraform
         run: terraform apply tfplan
-
-      - name: Notify Slack
-        if: always()
-        uses: slackapi/slack-github-action@v1.27.0
-        with:
-          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
-          channel-id: 'your-channel'
-          text: "CI/CD Pipeline for ${{ github.repository }} finished with status: ${{ job.status }}"
